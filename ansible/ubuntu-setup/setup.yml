@@ -2,15 +2,13 @@
 - name: Configure Ubuntu with my favorite tools and configurations
   hosts: localhost
   become: yes
-
   vars:
     username: "{{ lookup('env', 'USER') }}"
-
   tasks:
     - name: Update and upgrade apt packages
       apt:
-        update_cache: "yes"
-        upgrade: "yes"
+        update_cache: yes
+        upgrade: yes
 
     - name: Install essential packages
       apt:
@@ -28,6 +26,57 @@
           - docker-compose
         state: present
 
+    # Docker prerequisites and installation...
+    - name: Install prerequisites for Docker
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: latest
+        update_cache: yes
+
+    - name: Add Docker's official GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker APT repository
+      apt_repository:
+        repo: "deb [arch={{ ansible_architecture | default('amd64') }}] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
+        state: present
+        filename: docker
+
+    - name: Install Docker CE packages
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: latest
+        update_cache: yes
+
+    - name: Ensure docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Create docker group
+      group:
+        name: docker
+        state: present
+
+    - name: Add user to docker group
+      user:
+        name: "{{ username }}"
+        groups: docker
+        append: yes
+
+    # Oh My Zsh and Zsh plugins
     - name: Change default shell to zsh
       user:
         name: "{{ username }}"
@@ -67,63 +116,77 @@
         dest: /home/{{ username }}/.oh-my-zsh/custom/plugins/zsh-bat
       become: no
 
-    - name: Install Starship prompt
-      block:
-        - name: Download Starship script
-          get_url:
-            url: https://starship.rs/install.sh
-            dest: /tmp/install_starship.sh
-            mode: '0755'
-          become: no
-          environment:
-            HOME: "/home/{{ username }}"
-        - name: Run Starship script
-          shell: sh /tmp/install_starship.sh --yes
-          become: no
-
-    - name: Install Powerline fonts
-      block:
-        - name: Create Powerline fonts temporary directory
-          file:
-            path: /tmp/powerline-fonts
-            owner: "{{ username }}"
-            group: "{{ username }}"
-            state: directory
-            mode: '0755'
-        - name: Clone Powerline fonts
-          git:
-            repo: https://github.com/powerline/fonts.git
-            dest: /tmp/powerline-fonts
-          become: no
-        - name: Run install script Powerline fonts
-          shell: /tmp/powerline-fonts/install.sh
-          become: no
-
-    - name: Install NVM (Node Version Manager)
-      block:
-        - name: Download NVM installation script
-          get_url:
-            url: https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh
-            dest: /tmp/install_nvm.sh
-            mode: '0755'
-          become: no
-
-        - name: Run NVM installation script
-          shell: bash /tmp/install_nvm.sh
-          become: no
-          environment:
-            HOME: "/home/{{ username }}"
-
-    - name: Install latest LTS version of Node.js
-      shell: |
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        nvm install --lts && nvm use --lts
+    # Starship prompt installation
+    - name: Download Starship script
+      get_url:
+        url: https://starship.rs/install.sh
+        dest: /tmp/install_starship.sh
+        mode: '0755'
       become: no
       environment:
         HOME: "/home/{{ username }}"
 
-    - name: Create Starship configuration directory
+    - name: Run Starship script
+      shell: sh /tmp/install_starship.sh --yes
+      become: no
+
+    # Powerline fonts
+    - name: Create Powerline fonts temporary directory
+      file:
+        path: /tmp/powerline-fonts
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        state: directory
+        mode: '0755'
+
+    - name: Clone Powerline fonts
+      git:
+        repo: https://github.com/powerline/fonts.git
+        dest: /tmp/powerline-fonts
+      become: no
+
+    - name: Install Powerline fonts
+      shell: /tmp/powerline-fonts/install.sh
+      become: no
+
+    # FNM installation instead of NVM
+    - name: Install fnm (Fast Node Manager)
+      shell: curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell
+      args:
+        creates: "/home/{{ username }}/.fnm"
+      become: no
+      environment:
+        HOME: "/home/{{ username }}"
+        USER: "{{ username }}"
+
+    - name: Ensure fnm is added to .zshrc
+      lineinfile:
+        dest: "/home/{{ username }}/.zshrc"
+        line: |
+          # fnm initialization
+          export PATH="/home/{{ username }}/.fnm:$PATH"
+          eval "$(fnm env --use-on-cd --version-file-strategy=recursive)"
+        insertafter: EOF
+        state: present
+      become: no
+      owner: "{{ username }}"
+      group: "{{ username }}"
+      mode: '0644'
+
+    - name: Install latest LTS Node.js via fnm
+      shell: |
+        export HOME="/home/{{ username }}"
+        export PATH="$HOME/.fnm:$PATH"
+        eval "$(fnm env --use-on-cd --version-file-strategy=recursive)"
+        fnm install --lts
+        fnm default lts
+      become: no
+      environment:
+        HOME: "/home/{{ username }}"
+        PATH: "/home/{{ username }}/.fnm:{{ ansible_env.PATH }}"
+
+    # Starship config
+    - name: Ensure Starship config directory exists
       file:
         path: /home/{{ username }}/.config
         state: directory
